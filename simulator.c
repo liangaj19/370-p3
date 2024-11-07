@@ -122,30 +122,98 @@ int main(int argc, char *argv[]) {
     readMachineCode(&state, argv[1]);
 
     /* ------------ Initialize State ------------ */
+    state.pc = 0;
+    memset(state.reg, 0, sizeof(state.reg)); // set registers to all 0's
 
+    // set pipeline to all noops
+    state.IFID.instr = NOOPINSTR;
+    state.IDEX.instr = NOOPINSTR;
+    state.EXMEM.instr = NOOPINSTR;
+    state.MEMWB.instr = NOOPINSTR;
+    state.WBEND.instr = NOOPINSTR;
     /* ------------------- END ------------------ */
 
-    newState = state;
+    
 
     while (opcode(state.MEMWB.instr) != HALT) {
         printState(&state);
 
+        newState = state;
         newState.cycles += 1;
 
         /* ---------------------- IF stage --------------------- */
-
+        // use PC to fetch the instr
+        newState.IFID.instr = state.instrMem[state.pc];
+        newState.IFID.pcPlus1 = state.pc + 1;
+        newState.pc++;
 
         /* ---------------------- ID stage --------------------- */
-
+        // decode and read register values
+        newState.IDEX.instr = state.IFID.instr;
+        newState.IDEX.pcPlus1 = state.IFID.pcPlus1;
+        newState.IDEX.valA = state.reg[field0(state.IFID.instr)];
+        newState.IDEX.valB = state.reg[field1(state.IFID.instr)];
+        newState.IDEX.offset = convertNum(field2(state.IFID.instr));
 
         /* ---------------------- EX stage --------------------- */
+        // use ALU to calculate values
+        newState.EXMEM.instr = state.IDEX.instr;
+	    newState.EXMEM.branchTarget = state.IDEX.pcPlus1 + state.IDEX.offset;
+        int instr = newState.EXMEM.instr;
 
+        // calculate results
+        if (opcode(instr) == ADD) { // ADD
+            // regA + regB
+            newState.EXMEM.aluResult = state.IDEX.valA + state.IDEX.valB;
+        } else if (opcode(instr) == NOR) { // NOR
+            // regA nor regB
+            newState.EXMEM.aluResult = ~(state.IDEX.valA | state.IDEX.valB);
+        } else if (opcode(instr) == LW || opcode(instr) == SW) { // LW or SW
+            // regA + offset
+            newState.EXMEM.aluResult = state.IDEX.valA + state.IDEX.offset;
+        } else if (opcode(instr) == HALT) {
+            newState.EXMEM.aluResult = 0; // if we do not need the ALU, initialize as 0
+        }
+
+        // check if equal after we calculate the ALU result for BEQ
+        // if not BEQ, we just set eq to 1
+        if (opcode(instr) != BEQ) {
+            newState.EXMEM.eq = 1;
+        } else { // if BEQ, check if equal
+            if (state.IDEX.valA == newState.EXMEM.aluResult) {
+                newState.EXMEM.eq = 1;
+            } else {
+                newState.EXMEM.eq = 0;
+            }
+        }
+
+        // pass on valB if not NOOP
+        if (opcode(instr) != NOOP) {
+            newState.EXMEM.valB = state.IDEX.valB;
+        }
 
         /* --------------------- MEM stage --------------------- */
 
+        newState.MEMWB.instr = state.EXMEM.instr;
+        instr = newState.MEMWB.instr;
+        // data is either straight up ALU result, or use the ALU result to retrive from data mem
+        if (opcode(instr) == LW) { // lw data is the memory result
+            newState.MEMWB.writeData = state.dataMem[state.EXMEM.aluResult];
+        } else if (opcode(instr) == SW) { // sw uses regB's value and writes to data mem
+            newState.dataMem[state.EXMEM.aluResult] = state.EXMEM.valB;
+        } else if (opcode(instr) != NOOP) { // other instr uses ALU result except NOOP
+            newState.MEMWB.writeData = state.EXMEM.aluResult;
+        }
 
         /* ---------------------- WB stage --------------------- */
-
+        newState.WBEND.instr = state.MEMWB.instr;
+        instr = newState.WBEND.instr;
+        newState.WBEND.writeData = state.MEMWB.writeData;
+        if (opcode(instr) == ADD || opcode(instr) == NOR) { // add or nor, updates reg
+            newState.reg[field2(instr)] = newState.WBEND.writeData;
+        } else if (opcode(instr) == LW) { // lw writes to regB
+            newState.reg[field1(instr)] = newState.WBEND.writeData;
+        }
 
         /* ------------------------ END ------------------------ */
         state = newState; /* this is the last statement before end of the loop. It marks the end
